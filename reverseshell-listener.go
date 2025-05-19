@@ -25,7 +25,7 @@ var sessionHelpCommand = "rev-help"
 func main() {
 	fmt.Println("=======================================")
 	fmt.Println(" Multithreaded Reverse Shell listener  ")
-	fmt.Println(" v0.0.2                                ")
+	fmt.Println(" v0.0.4                                ")
 	fmt.Println("=======================================")
 
 	// Keyboard signal notify
