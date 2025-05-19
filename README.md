@@ -3,11 +3,11 @@ A multithreading reverse shell listener, similar as a multithreading netcat
 
 Simple usage
 ```
-go run reverseshell-listener.go <port>
+go run . <port>
 ```
 Compiled version
 ```
-go build reverseshell-listener.go
+go build .
 reverseshell-listener <port>
 ```
 
