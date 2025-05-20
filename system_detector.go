@@ -22,9 +22,9 @@ func NewSystemDetector(conn net.Conn) *SystemDetector {
 // DetectOS detects the operating system of the connected client
 func (sd *SystemDetector) DetectOS() string {
 	osDetection := []string{
-		"ver 2>/dev/null",           // Windows
-		"uname -a 2>/dev/null",      // Linux/Unix
-		"systeminfo 2>/dev/null",    // Windows (more detailed)
+		"ver 2>/dev/null",                 // Windows
+		"uname -a 2>/dev/null",            // Linux/Unix
+		"systeminfo 2>/dev/null",          // Windows (more detailed)
 		"cat /etc/os-release 2>/dev/null", // Linux
 	}
 
@@ -109,9 +109,14 @@ func (sd *SystemDetector) DetectPythonVersions() []string {
 					splitVersion := strings.Split(version, " ")
 					if len(splitVersion) > 1 {
 						version = splitVersion[2]
-					}else{
+					} else {
 						version = splitVersion[1]
 					}
+					// Check if the version really a version (at least have 2 dots)
+					if strings.Count(version, ".") < 2 {
+						continue
+					}
+
 					if !strings.HasPrefix(version, "Python") {
 						version = "Python " + version
 					}
@@ -175,4 +180,4 @@ func (sd *SystemDetector) SpawnPTY(pythonVersions []string, shell string) bool {
 		return true
 	}
 	return false
-} 
+}
