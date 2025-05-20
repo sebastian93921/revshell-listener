@@ -466,10 +466,6 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 
 			done <- true
 
-			// Show progress
-			fmt.Printf("[+] File upload command sent\n")
-			fmt.Printf("[+] Waiting for remote host to process the file...\n")
-
 			fmt.Println("[+] File upload completed")
 			return true
 		}
