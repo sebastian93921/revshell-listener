@@ -180,6 +180,20 @@ func (sd *SystemDetector) SpawnPTY(pythonVersions []string, shell string) bool {
 		return false
 	}
 
+	// Check if we're already in a proper shell environment
+	sd.conn.Write([]byte("echo $PS1\n"))
+	time.Sleep(500 * time.Millisecond)
+	buf := make([]byte, 1024)
+	n, err := sd.conn.Read(buf)
+	if err == nil {
+		response := string(buf[:n])
+		// If we see a prompt-like string (contains @ or :), we're already in a proper shell
+		if strings.Contains(response, "@") || strings.Contains(response, ":") {
+			fmt.Println("[+] Already in a proper shell environment, skipping PTY spawn")
+			return true
+		}
+	}
+
 	// Use the first available Python version
 	pythonCmd := "python"
 	if strings.Contains(pythonVersions[0], "Python 3") {

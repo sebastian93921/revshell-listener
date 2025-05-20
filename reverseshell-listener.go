@@ -137,7 +137,6 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 			if len(socket.pythonVersions) > 0 {
 				fmt.Println("[+] Checking for shell availability...")
 				availableShell := detector.DetectShell()
-				fmt.Println("[-] Found shell:", availableShell)
 
 				if availableShell != "" {
 					detector.SpawnPTY(socket.pythonVersions, availableShell)
