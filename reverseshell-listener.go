@@ -371,10 +371,12 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 
 	if strings.HasPrefix(command, "rev-") {
 		fmt.Println("<---------------------------------------------------------------------")
-		revCommandIsRunning = true
 		// Split command and arguments
 		parts := strings.Fields(command)
 		cmd := parts[0]
+
+		// Set the flag to true
+		revCommandIsRunning = true
 
 		switch cmd {
 		case sessionHelpCommand:
