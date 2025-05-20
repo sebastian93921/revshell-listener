@@ -152,6 +152,9 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 			}
 			// Reset read deadline
 			con.SetReadDeadline(time.Time{})
+
+			// Send a newline to the connection
+			con.Write([]byte("\n"))
 		} else {
 			fmt.Println("[*] Manual mode enabled - skipping automatic execution")
 		}
@@ -325,19 +328,36 @@ func (s *Socket) readingFromStdin(src io.Reader, dst io.Writer) <-chan int {
 }
 
 func (s *Socket) prompt(message string, inputChan chan []byte) bool {
-	for {
+	maxRetries := 3
+	retryCount := 0
+
+	for retryCount < maxRetries {
 		if !s.isClosed && !s.isBackground {
 			fmt.Print(message + " (Y/N): ")
 			buf := <-inputChan
 			input := strings.TrimSuffix(string(buf), "\n")
 			input = strings.ToUpper(input)
+
+			// Handle empty input (Ctrl+D)
+			if input == "" {
+				fmt.Println("\n[!] Invalid input. Please enter Y or N.")
+				retryCount++
+				continue
+			}
+
 			if input == "Y" || input == "N" {
 				return input == "Y"
 			}
+
+			fmt.Println("[!] Invalid input. Please enter Y or N.")
+			retryCount++
 		} else {
 			return false
 		}
 	}
+
+	fmt.Println("[!] Maximum retries exceeded. Killing session.")
+	return true
 }
 
 func (s *Socket) status() string {
