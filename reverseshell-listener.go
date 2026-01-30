@@ -397,12 +397,7 @@ func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.W
 
 	if strings.HasPrefix(command, "rev-") {
 		fmt.Println("<---------------------------------------------------------------------")
-		revCommandIsRunning = true
-		// Split command and arguments
-		parts := strings.Fields(command)
-		cmd := parts[0]
-
-		switch cmd {
+		switch command {
 		case sessionHelpCommand:
 			fmt.Println(backgroundCommand, "- Background the session")
 			fmt.Println(myipCommand, "- Display host ip address")
