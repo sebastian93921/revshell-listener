@@ -38,14 +38,15 @@ func init() {
 func main() {
 	fmt.Println("=======================================")
 	fmt.Println(" Multithreaded Reverse Shell listener  ")
-	fmt.Println(" v0.0.5                                ")
+	fmt.Println(" v0.0.6                                ")
 	fmt.Println("=======================================")
 
 	// Keyboard signal notify
 	signal.Notify(ctrlCChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	var destinationPort string
-	clients := map[int]*Socket{}
+	// clients := map[int]*Socket{} // Removed old map
+	sessionManager := NewSessionManager() // Use new Manager
 
 	flag.Parse()
 
@@ -58,7 +59,7 @@ func main() {
 
 	fmt.Println("[+] Press Ctrl+C+Enter to quit this application")
 	fmt.Println("[+] Listening on port", destinationPort)
-	go connectionThread(destinationPort, clients)
+	go connectionThread(destinationPort, sessionManager)
 
 	reader := bufio.NewReader(os.Stdin)
 	connectedSession := 1
@@ -68,13 +69,15 @@ func main() {
 			fmt.Println("\n[+] Application quit successfully")
 			os.Exit(0)
 		default:
-			if len(clients) > 0 && connectedSession == 0 {
+			// Using thread-safe Count()
+			if sessionManager.Count() > 0 && connectedSession == 0 {
 				fmt.Print("listener> ")
 				text, _ := reader.ReadString('\n')
-				connectedSession = commandHandler(text, clients)
-			} else if len(clients) > 0 && connectedSession != 0 {
-				if !clients[connectedSession].isClosed {
-					clients[connectedSession].interact()
+				connectedSession = commandHandler(text, sessionManager)
+			} else if sessionManager.Count() > 0 && connectedSession != 0 {
+				socket, ok := sessionManager.Get(connectedSession)
+				if ok && !socket.isClosed {
+					socket.interact()
 				} else {
 					fmt.Println("[-] No matched session or session has been closed")
 				}
@@ -86,34 +89,77 @@ func main() {
 	}
 }
 
-func commandHandler(cmd string, clients map[int]*Socket) int {
+func commandHandler(cmd string, sm *SessionManager) int {
 	connectedSession := 0
 
-	splitCommand := strings.Split(cmd, " ")
-	switch strings.TrimSuffix(splitCommand[0], "\n") {
+	splitCommand := strings.Fields(cmd)
+	if len(splitCommand) == 0 {
+		return 0
+	}
+
+	command := splitCommand[0]
+
+	switch command {
 	case "help":
 		fmt.Println("sessions \t- List sessions")
 		fmt.Println("session <num> \t- Get into session by ID")
+		fmt.Println("kill <id> \t- Kill a session")
+		fmt.Println("rename <id> <name> \t- Rename a session")
+		fmt.Println("exit \t\t- Exit application")
 	case "exit":
 		os.Exit(0)
 	case "sessions":
-		fmt.Println("--------------------------------------------------------------------->")
-		for _, client := range clients {
-			fmt.Println(client.status())
-		}
-		fmt.Println("<---------------------------------------------------------------------")
+		sm.List()
 	case "session":
-		connectedSession, _ = strconv.Atoi(strings.TrimSuffix(splitCommand[1], "\n"))
-		if connectedSession > len(clients) {
+		if len(splitCommand) < 2 {
+			fmt.Println("[-] Usage: session <id>")
+			break
+		}
+		id, err := strconv.Atoi(splitCommand[1])
+		if err != nil {
+			fmt.Println("[-] Invalid session ID")
+			break
+		}
+		if _, ok := sm.Get(id); ok {
+			connectedSession = id
+		} else {
 			fmt.Println("[!] Wrong session selected")
 			connectedSession = 0
+		}
+	case "kill":
+		if len(splitCommand) < 2 {
+			fmt.Println("[-] Usage: kill <id>")
+			break
+		}
+		id, err := strconv.Atoi(splitCommand[1])
+		if err != nil {
+			fmt.Println("[-] Invalid session ID")
+			break
+		}
+		sm.Remove(id)
+		fmt.Printf("[+] Session %d killed\n", id)
+	case "rename":
+		if len(splitCommand) < 3 {
+			fmt.Println("[-] Usage: rename <id> <name>")
+			break
+		}
+		id, err := strconv.Atoi(splitCommand[1])
+		if err != nil {
+			fmt.Println("[-] Invalid session ID")
+			break
+		}
+		name := splitCommand[2]
+		if sm.Rename(id, name) {
+			fmt.Printf("[+] Session %d renamed to %s\n", id, name)
+		} else {
+			fmt.Printf("[-] Session %d not found\n", id)
 		}
 	}
 
 	return connectedSession
 }
 
-func connectionThread(destPort string, clients map[int]*Socket) {
+func connectionThread(destPort string, sm *SessionManager) {
 	listener, err := net.Listen("tcp", destPort)
 	if err != nil {
 		fmt.Println("[-]", err)
@@ -127,6 +173,9 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 			fmt.Println("[-] Error accepting:", err)
 		}
 		// Handle connections in a new goroutine.
+		// Use next available ID if we want, or just increment.
+		// For simplicity, we keep incrementing.
+
 		fmt.Println("[+] Got connection from <", con.RemoteAddr().String(), ">, Session ID:", sessionId)
 		socket := &Socket{sessionId: sessionId, con: con}
 
@@ -160,7 +209,7 @@ func connectionThread(destPort string, clients map[int]*Socket) {
 			fmt.Println("[*] Manual mode enabled - skipping automatic execution")
 		}
 
-		clients[sessionId] = socket
+		sm.Add(sessionId, socket)
 		sessionId = sessionId + 1
 	}
 }
@@ -175,6 +224,7 @@ type Socket struct {
 	isClosed       bool
 	osType         string
 	pythonVersions []string
+	Name           string // Added Name field
 }
 
 func (s *Socket) interact() {
@@ -362,7 +412,11 @@ func (s *Socket) prompt(message string, inputChan chan []byte) bool {
 }
 
 func (s *Socket) status() string {
-	return fmt.Sprintf("Session ID: [%d], Connection <%s> Seesion killed [%t]", s.sessionId, s.con.RemoteAddr(), s.isClosed)
+	nameStr := ""
+	if s.Name != "" {
+		nameStr = fmt.Sprintf(" (%s)", s.Name)
+	}
+	return fmt.Sprintf("Session ID: [%d]%s, Connection <%s> Session Closed [%t]", s.sessionId, nameStr, s.con.RemoteAddr(), s.isClosed)
 }
 
 func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.Writer) bool {
