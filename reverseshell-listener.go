@@ -416,7 +416,11 @@ func (s *Socket) status() string {
 	if s.Name != "" {
 		nameStr = fmt.Sprintf(" (%s)", s.Name)
 	}
-	return fmt.Sprintf("Session ID: [%d]%s, Connection <%s> Session Closed [%t]", s.sessionId, nameStr, s.con.RemoteAddr(), s.isClosed)
+	osType := s.osType
+	if osType == "" {
+		osType = "Unknown"
+	}
+	return fmt.Sprintf("Session ID: [%d]%s, Connection <%s> OS [%s] Session Closed [%t]", s.sessionId, nameStr, s.con.RemoteAddr(), osType, s.isClosed)
 }
 
 func (s *Socket) inSessionCommandHandler(command string, src io.Reader, dst io.Writer) bool {
